@@ -2,18 +2,73 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
-import uvicorn
+import sys
 from typing import Optional
-from knowledgebase.pinecone_client import index
-from agents.geminiSetup import get_gemini_summary
-from agents.search_agent import MasterSearch
-from agents.google_agent import google_search_agent  # ✅ Google Search Agent
 
+# =======================
+# Startup Diagnostics
+# =======================
+print("="*50)
+print("🚀 Starting HealthGenA API")
+print(f"Python version: {sys.version}")
+print(f"PORT environment variable: {os.environ.get('PORT', 'NOT SET')}")
+print("="*50)
 
+# =======================
+# Import with Error Handling
+# =======================
+index = None
+get_gemini_summary = None
+MasterSearch = None
+google_search_agent = None
+store_message = None
+create_empty_session = None
+get_sessions = None
+get_session_messages = None
+session_exists = None
 
-# Import session management utilities
-from mongoDb.session_manager import store_message, create_empty_session, get_sessions, get_session_messages,session_exists
+try:
+    from knowledgebase.pinecone_client import index
+    print("✅ Pinecone client imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import Pinecone: {e}")
+    import traceback
+    traceback.print_exc()
 
+try:
+    from agents.geminiSetup import get_gemini_summary
+    print("✅ Gemini setup imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import Gemini: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from agents.search_agent import MasterSearch
+    print("✅ Search agent imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import MasterSearch: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from agents.google_agent import google_search_agent
+    print("✅ Google agent imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import Google agent: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from mongoDb.session_manager import (
+        store_message, create_empty_session, 
+        get_sessions, get_session_messages, session_exists
+    )
+    print("✅ MongoDB session manager imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import MongoDB: {e}")
+    import traceback
+    traceback.print_exc()
 
 # =======================
 # App Initialization
@@ -25,14 +80,40 @@ origins = [
     "http://localhost:3000"
 ]
 
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# =======================
+# Health Check Endpoints
+# =======================
+@app.get("/")
+async def root():
+    """Root endpoint for health checks"""
+    return {
+        "status": "healthy",
+        "service": "HealthGenA Semantic Medical Search",
+        "version": "1.0.0"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check"""
+    health_status = {
+        "status": "ok",
+        "services": {
+            "pinecone": index is not None,
+            "gemini": get_gemini_summary is not None,
+            "search_agent": MasterSearch is not None,
+            "google_agent": google_search_agent is not None,
+            "mongodb": all([store_message, create_empty_session, get_sessions])
+        }
+    }
+    return health_status
 
 # =======================
 # Models
@@ -42,7 +123,6 @@ class QueryData(BaseModel):
     session_id: str
     query: str
 
-    
 class SessionCreate(BaseModel):
     email: str
     title: Optional[str] = "New Chat"
@@ -51,7 +131,17 @@ class SessionCreate(BaseModel):
 # =======================
 # Initialize Services
 # =======================
-search_agent = MasterSearch(pinecone_index=index)
+search_agent = None
+try:
+    if MasterSearch and index:
+        search_agent = MasterSearch(pinecone_index=index)
+        print("✅ Search agent initialized successfully")
+    else:
+        print("⚠️ Search agent not initialized (missing dependencies)")
+except Exception as e:
+    print(f"❌ Failed to initialize search agent: {e}")
+    import traceback
+    traceback.print_exc()
 
 # =======================
 # Helper Functions
@@ -60,6 +150,9 @@ def summarization_agent(kb_results, google_results, user_query):
     """
     Merge Pinecone and Google results, format for Gemini summarization.
     """
+    if not get_gemini_summary:
+        raise HTTPException(status_code=503, detail="Gemini service not available")
+    
     combined_results = []
 
     # Add Pinecone results with metadata
@@ -112,41 +205,57 @@ def recommendation_agent(summary, google_results, kb_results):
         "citations": citations
     }
 
-
+# =======================
+# Session Management Routes
+# =======================
 @app.post("/new-session")
 async def new_session(data: SessionCreate):
-    session_id = create_empty_session(email=data.email, title=data.title or "New Chat")
-    return {"session_id": session_id, "title": data.title or "New Chat"}
+    """Create a new chat session"""
+    if not create_empty_session:
+        raise HTTPException(status_code=503, detail="Session service not available")
+    
+    try:
+        session_id = create_empty_session(email=data.email, title=data.title or "New Chat")
+        return {"session_id": session_id, "title": data.title or "New Chat"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
 
 
 @app.get("/sessions/{email}")
 async def list_sessions(email: str):
-     sessions = get_sessions(email)
-     return {"sessions": sessions}
-
-
+    """List all sessions for a user"""
+    if not get_sessions:
+        raise HTTPException(status_code=503, detail="Session service not available")
+    
+    try:
+        sessions = get_sessions(email)
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve sessions: {str(e)}")
 
 
 @app.get("/sessions/{email}/{session_id}/messages")
 async def list_session_messages(email: str, session_id: str):
-    """
-    Return messages array for the given session.
-    """
-    messages = get_session_messages(email, session_id)
-    return [
-        {
-            "id": str(m.get("_id", "")),
-            "sender": "ai" if m.get("role") == "assistant" else "user",
-            "text": m.get("content", ""),
-            "timestamp": m.get("timestamp"),
-        }
-        for m in messages
-    ]
-
-
+    """Return messages array for the given session"""
+    if not get_session_messages:
+        raise HTTPException(status_code=503, detail="Session service not available")
+    
+    try:
+        messages = get_session_messages(email, session_id)
+        return [
+            {
+                "id": str(m.get("_id", "")),
+                "sender": "ai" if m.get("role") == "assistant" else "user",
+                "text": m.get("content", ""),
+                "timestamp": m.get("timestamp"),
+            }
+            for m in messages
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve messages: {str(e)}")
 
 # =======================
-# API Route
+# Main Query Route
 # =======================
 @app.post("/query")
 async def query_pipeline(data: QueryData):
@@ -158,6 +267,19 @@ async def query_pipeline(data: QueryData):
     4️⃣ Summarize using Gemini
     5️⃣ Return answer with citations
     """
+    # Check if all required services are available
+    if not all([search_agent, google_search_agent, get_gemini_summary, store_message]):
+        missing_services = []
+        if not search_agent: missing_services.append("search_agent")
+        if not google_search_agent: missing_services.append("google_search")
+        if not get_gemini_summary: missing_services.append("gemini")
+        if not store_message: missing_services.append("session_storage")
+        
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Required services not available: {', '.join(missing_services)}"
+        )
+    
     try:
         # Step 1: Enrich the query
         enriched_queries = search_agent.enrich_query(data.query)
@@ -190,13 +312,14 @@ async def query_pipeline(data: QueryData):
         # Step 6: Generate final recommendation + citations
         final_response = recommendation_agent(summary, google_results, top_matches)
 
+        # Step 7: Store messages in session
+        try:
+            store_message(data.email, data.session_id, role="user", content=data.query)
+            store_message(data.email, data.session_id, role="assistant", content=summary)
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to store messages: {e}")
 
-        # User message
-        store_message(data.email, data.session_id, role="user", content=data.query)
-        # AI summary response
-        store_message(data.email, data.session_id, role="assistant", content=summary)
-
-        # Step 7: Return structured output
+        # Step 8: Return structured output
         return {
             "query": data.query,
             "refined_queries": enriched_queries,
@@ -206,12 +329,15 @@ async def query_pipeline(data: QueryData):
             "final_response": final_response
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
-    
+        print(f"❌ Error in query pipeline: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # use Render’s PORT variable or default
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
-
-
+print("="*50)
+print("✅ FastAPI app initialized successfully")
+print("🌐 Ready to accept connections")
+print("="*50)
