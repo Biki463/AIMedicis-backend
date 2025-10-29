@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+import uvicorn
 from typing import Optional
 from knowledgebase.pinecone_client import index
 from agents.geminiSetup import get_gemini_summary
@@ -19,7 +20,13 @@ from mongoDb.session_manager import store_message, create_empty_session, get_ses
 # =======================
 app = FastAPI(title="HealthGenA Semantic Medical Search")
 
-origins = ["https://aimedicis.vercel.app"]
+origins = [
+    "https://ai-medicis-frontend.vercel.app",
+    "http://localhost:3000"
+]
+
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -201,5 +208,10 @@ async def query_pipeline(data: QueryData):
 
     except Exception as e:
         return {"error": str(e)}
+    
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # use Render’s PORT variable or default
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
 
