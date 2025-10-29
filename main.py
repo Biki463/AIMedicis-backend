@@ -19,7 +19,7 @@ from mongoDb.session_manager import store_message, create_empty_session, get_ses
 # =======================
 app = FastAPI(title="HealthGenA Semantic Medical Search")
 
-origins = ["http://localhost:3000"]
+origins = ["https://aimedicis.vercel.app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
